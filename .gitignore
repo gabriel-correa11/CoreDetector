@@ -28,3 +28,13 @@ bin/
 
 ### Mac OS ###
 .DS_Store
+# Machine Learning Assets
+models/*.joblib
+models/registry.json
+data/*.csv
+
+# Infrastructure & Secrets
+.env
+logs/*.log
+__pycache__/
+.venv/
