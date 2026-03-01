@@ -74,8 +74,8 @@ class FraudAnalyzer:
         signals = []
         patterns = {
             r"jadiog|cutt\.ly|bit\.ly|rastreiosimediato\.com": "Suspicious link or brand spoofing",
-            r"suspenso|irregular|bloqueio|bloquead|imediatamente|suspended|urgent|unauthorized|unusual\s+activity|account\s+locked|expire": "Hard urgency or threat tone",
-            r"pix|transferencia|token|senha|wire\s+transfer|zelle|routing\s+number|ssn|social\s+security": "Direct financial request",
+            r"suspenso|irregular|bloqueio|bloquead|imediatamente|risco|adverte|atualize|atualizacao|suspended|urgent|unauthorized|unusual\s+activity|account\s+locked|expire": "Hard urgency or threat tone",
+            r"cpf|cnpj|pix|transferencia|token|senha|dados bancarios|numero da conta|wire\s+transfer|zelle|routing\s+number|ssn|social\s+security": "Direct financial request",
             r"ajuizamento|audiencia|protocolado|processo|coren|irs|lawsuit|subpoena": "Legal pressure or fake subpoena bait",
         }
         for pattern, description in patterns.items():
