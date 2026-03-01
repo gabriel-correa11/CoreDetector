@@ -23,18 +23,30 @@ bin/
 /nbdist/
 /.nb-gradle/
 
-### VS Code ###
-.vscode/
-
 ### Mac OS ###
 .DS_Store
-# Machine Learning Assets
-models/*.joblib
-models/registry.json
-data/*.csv
+# Machine Learning Assets (proprietary)
+models/
+data/
+
+# Pipeline & Training IP (proprietary)
+retrain_pipeline.py
+setup_infrastructure.py
+
+# Test Suite (reveals detection edge cases)
+tests/
 
 # Infrastructure & Secrets
 .env
-logs/*.log
+*.env
+.env.*
+logs/
 __pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
 .venv/
+
+# IDE
+.idea/
+.vscode/
