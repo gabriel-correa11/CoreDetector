@@ -117,7 +117,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{API_URL}/api/v1/detect",
-            json={"text": text},
+            json={"text": text, "source": "telegram"},
             timeout=15,
         )
 
