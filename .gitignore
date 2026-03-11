@@ -51,3 +51,7 @@ __pycache__/
 # IDE
 .idea/
 .vscode/
+
+# Session notes
+NOTAS_SESSAO.md
+.claude/
