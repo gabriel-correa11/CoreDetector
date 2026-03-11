@@ -6,7 +6,7 @@ import statistics
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LOG_PATH = os.path.join(PROJECT_ROOT, "logs", "api_audit.log")
 FEEDBACK_PATH = os.path.join(PROJECT_ROOT, "data", "feedback.csv")
 REGISTRY_PATH = os.path.join(PROJECT_ROOT, "models", "registry.json")

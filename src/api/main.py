@@ -3,7 +3,6 @@ import joblib
 import json
 import logging
 import csv
-from collections import defaultdict
 from time import perf_counter
 
 from fastapi import FastAPI, Header, HTTPException, Form, Response, Request, UploadFile, File
@@ -11,12 +10,12 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-from src.models import DetectionRequest
-from src.image_processor import extract_text
-from src.analyzer import FraudAnalyzer
-from src.utils import DataMasker
-from src.dashboard import get_dashboard
-from src.whatsapp import (
+from src.api.models import DetectionRequest
+from src.core.image_processor import extract_text
+from src.core.analyzer import FraudAnalyzer
+from src.core.utils import DataMasker
+from src.core.dashboard import get_dashboard
+from src.bot.whatsapp import (
     build_whatsapp_response,
     build_feedback_ack,
     build_unauthorized_response,
@@ -24,21 +23,22 @@ from src.whatsapp import (
 )
 
 limiter = Limiter(key_func=get_remote_address)
+app = FastAPI()
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REGISTRY_PATH = os.path.join(PROJECT_ROOT, "models", "registry.json")
+
+_last_hash: dict = {}
 
 _ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 
 
 def _telegram_user_key(request: Request) -> str:
     uid = request.headers.get("X-Telegram-User-Id")
     return f"tg:{uid}" if uid else get_remote_address(request)
-app = FastAPI()
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REGISTRY_PATH = os.path.join(PROJECT_ROOT, "models", "registry.json")
-
-_last_hash: dict = {}
 
 
 def load_production_model():
@@ -96,9 +96,6 @@ async def whatsapp_webhook(Body: str = Form(default=""), From: str = Form(defaul
     return Response(content=twiml, media_type="application/xml")
 
 
-_IMAGE_MAX_BYTES = 5 * 1024 * 1024
-
-
 @app.post("/api/v1/detect/image")
 @limiter.limit(os.getenv("RATE_LIMIT_IMAGE", "3/minute"), key_func=_telegram_user_key)
 def detect_image(request: Request, file: UploadFile = File(...)):
@@ -125,7 +122,7 @@ def detect_image(request: Request, file: UploadFile = File(...)):
         f"Fraud: {result['is_fraud']} | Lookalikes: {result['look_alike_domains']} | "
         f"OCR: {ocr_ms:.2f}ms | ML: {ml_ms:.2f}ms | Latency: {ocr_ms + ml_ms:.2f}ms"
     )
-    return result
+    return {**result, "extracted_text": text}
 
 
 @app.get("/api/v1/health/dashboard")
@@ -138,7 +135,7 @@ async def dashboard():
 async def collect_feedback(
     request: Request, text: str, is_fraud: bool, x_admin_key: str = Header(None)
 ):
-    if x_admin_key != os.getenv("ADMIN_API_KEY"):
+    if not x_admin_key or x_admin_key != os.getenv("ADMIN_API_KEY"):
         raise HTTPException(status_code=403, detail="Unauthorized")
 
     masked_text = DataMasker.mask_pii(text)
