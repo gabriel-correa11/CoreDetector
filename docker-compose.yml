@@ -41,8 +41,8 @@ services:
 
   wppconnect:
     build:
-      context: .
-      dockerfile: docker/wppconnect.Dockerfile
+      context: ./services/wppconnect
+      dockerfile: Dockerfile
     ports:
       - "21465:21465"
     volumes:
