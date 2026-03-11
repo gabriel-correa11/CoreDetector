@@ -41,8 +41,8 @@ services:
 
   wppconnect:
     build:
-      context: https://github.com/wppconnect-team/wppconnect-server.git
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: docker/wppconnect.Dockerfile
     ports:
       - "21465:21465"
     volumes:
