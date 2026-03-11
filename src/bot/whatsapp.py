@@ -13,9 +13,9 @@ from src.core.image_processor import extract_text
 
 logger = logging.getLogger(__name__)
 
-_WPP_BASE_URL = os.getenv("WPP_BASE_URL", "http://wppconnect:21465")
-_WPP_SESSION = os.getenv("WPP_SESSION", "default")
-_WPP_AUTH_TOKEN = os.getenv("WPP_AUTH_TOKEN", "")
+_EVO_BASE_URL = os.getenv("WPP_BASE_URL", "http://evolution:8080")
+_EVO_INSTANCE = os.getenv("WPP_SESSION", "default")
+_EVO_API_KEY = os.getenv("WPP_AUTH_TOKEN", "")
 
 _RATE_LIMIT = int(os.getenv("RATE_LIMIT_WHATSAPP_USER", "10"))
 _IMAGE_RATE_LIMIT = int(os.getenv("RATE_LIMIT_WHATSAPP_IMAGE", "3"))
@@ -86,18 +86,14 @@ def _build_reply(result: dict) -> str:
             result.get("suspicious_domains", []) + result.get("look_alike_domains", [])
         )
     )
-
     signal_section = (
         "\n\nMotivos identificados:\n" + "\n".join(f"- {_SIGNAL_LABELS.get(s, s)}" for s in signals)
-        if signals
-        else ""
+        if signals else ""
     )
     domain_section = (
         "\n\nDomínios suspeitos:\n" + "\n".join(f"- {d}" for d in domains)
-        if domains
-        else ""
+        if domains else ""
     )
-
     if key == "HIGH":
         return f"ATENCAO: MENSAGEM PERIGOSA{signal_section}{domain_section}\n\n{_FOOTER_HIGH}"
     if key == "MEDIUM":
@@ -105,14 +101,25 @@ def _build_reply(result: dict) -> str:
     return f"Mensagem parece segura.{signal_section}{domain_section}\n\n{_FOOTER_LOW}"
 
 
+def _extract_text_from_message(message: dict, msg_type: str) -> str:
+    return (
+        message.get("conversation")
+        or message.get("extendedTextMessage", {}).get("text")
+        or message.get(msg_type, {}).get("caption")
+        or ""
+    )
+
+
+def _extract_media_base64(message: dict, msg_type: str) -> Optional[str]:
+    media = message.get(msg_type, {})
+    return media.get("base64") or None
+
+
 class WPPConnectClient:
     def __init__(self) -> None:
-        self._base = _WPP_BASE_URL.rstrip("/")
-        self._session = _WPP_SESSION
-        self._headers = {
-            "Authorization": f"Bearer {_WPP_AUTH_TOKEN}",
-            "Content-Type": "application/json",
-        }
+        self._base = _EVO_BASE_URL.rstrip("/")
+        self._instance = _EVO_INSTANCE
+        self._headers = {"apikey": _EVO_API_KEY, "Content-Type": "application/json"}
         self._client = httpx.AsyncClient(timeout=15.0)
 
     async def _request_with_retry(
@@ -126,50 +133,37 @@ class WPPConnectClient:
                 if resp.status_code < 500:
                     return resp
                 logger.warning(
-                    "WPPConnect %s %s attempt %d/%d returned %d",
+                    "Evolution %s %s attempt %d/%d returned %d",
                     method, url, attempt + 1, _RETRY_ATTEMPTS, resp.status_code,
                 )
             except httpx.HTTPError as exc:
                 logger.warning(
-                    "WPPConnect %s %s attempt %d/%d failed: %s",
+                    "Evolution %s %s attempt %d/%d failed: %s",
                     method, url, attempt + 1, _RETRY_ATTEMPTS, exc,
                 )
             if attempt < _RETRY_ATTEMPTS - 1:
                 await asyncio.sleep(_RETRY_BACKOFF[attempt])
-        logger.error(
-            "WPPConnect %s %s exhausted %d retries", method, url, _RETRY_ATTEMPTS
-        )
+        logger.error("Evolution %s %s exhausted %d retries", method, url, _RETRY_ATTEMPTS)
         return None
 
     async def send_message(self, to: str, text: str) -> None:
-        url = f"{self._base}/api/{self._session}/send-message"
-        resp = await self._request_with_retry(
-            "POST", url, json={"phone": to, "message": text, "isGroup": False}
-        )
+        phone = to.split("@")[0]
+        url = f"{self._base}/message/sendText/{self._instance}"
+        resp = await self._request_with_retry("POST", url, json={"number": phone, "text": text})
         if resp is not None and resp.status_code >= 400:
             logger.error(
-                "WPPConnect send-message %d for %s: %s",
-                resp.status_code, to, resp.text[:200],
+                "Evolution send-message %d for %s: %s",
+                resp.status_code, phone, resp.text[:200],
             )
 
-    async def get_media_bytes(self, message_id: str) -> Optional[bytes]:
-        url = f"{self._base}/api/{self._session}/get-media-by-message/{message_id}"
-        resp = await self._request_with_retry("GET", url)
-        if resp is None:
-            return None
-        if resp.status_code == 404:
-            logger.warning("WPPConnect media not found: %s", message_id)
-            return None
-        if resp.status_code != 200:
-            logger.error("WPPConnect get-media %d for %s", resp.status_code, message_id)
-            return None
-
-        data = resp.json()
-        raw = (
-            data.get("base64")
-            or data.get("data", {}).get("base64", "")
-            or data.get("response", {}).get("base64", "")
+    async def get_media_bytes(self, message_key: dict, message: dict) -> Optional[bytes]:
+        url = f"{self._base}/chat/getBase64FromMediaMessage/{self._instance}"
+        resp = await self._request_with_retry(
+            "POST", url, json={"message": {"key": message_key, "message": message}}
         )
+        if resp is None or resp.status_code != 200:
+            return None
+        raw = resp.json().get("base64", "")
         if not raw:
             return None
         if "," in raw:
@@ -177,7 +171,7 @@ class WPPConnectClient:
         try:
             return base64.b64decode(raw)
         except Exception as exc:
-            logger.error("WPPConnect base64 decode failed for %s: %s", message_id, exc)
+            logger.error("Evolution base64 decode failed: %s", exc)
             return None
 
 
@@ -187,35 +181,44 @@ class WhatsAppHandler:
         self._analyzer = analyzer
 
     async def handle_webhook(self, payload: dict) -> None:
-        if payload.get("event") != "onmessage":
+        event = payload.get("event")
+        if event != "messages.upsert":
             return
 
         data = payload.get("data", {})
-        sender: str = data.get("from", "")
-        if not sender:
+        key = data.get("key", {})
+
+        if key.get("fromMe"):
+            return
+
+        sender: str = key.get("remoteJid", "")
+        if not sender or sender.endswith("@g.us"):
             return
 
         if not is_authorized(sender):
             await self._client.send_message(sender, "Acesso não autorizado.")
             return
 
-        msg_type: str = data.get("type", "chat")
-        has_media: bool = data.get("hasMedia", False)
-        message_id: str = (data.get("id") or {}).get("id", "")
+        msg_type: str = data.get("messageType", "")
+        message: dict = data.get("message", {})
 
-        if has_media and msg_type in {"image", "document"}:
-            await self._handle_media(sender, message_id)
-        elif msg_type == "chat":
-            body: str = data.get("body", "").strip()
-            if not body:
+        if msg_type in {"imageMessage", "documentMessage", "documentWithCaptionMessage"}:
+            raw_b64 = _extract_media_base64(message, msg_type)
+            if raw_b64:
+                await self._handle_media_b64(sender, raw_b64)
+            else:
+                await self._handle_media_download(sender, key, message)
+        elif msg_type in {"conversation", "extendedTextMessage"}:
+            text = _extract_text_from_message(message, msg_type).strip()
+            if not text:
                 return
-            if body.upper() == "SEGURO":
+            if text.upper() == "SEGURO":
                 await self._handle_false_positive(sender)
             else:
-                await self._handle_text(sender, body)
+                await self._handle_text(sender, text)
         else:
             logger.debug(
-                "Ignoring WPPConnect message type=%s from X-Whatsapp-User-Id=%s",
+                "Ignoring Evolution message type=%s from X-Whatsapp-User-Id=%s",
                 msg_type, sender,
             )
 
@@ -225,7 +228,6 @@ class WhatsAppHandler:
                 sender, "Limite atingido. Tente novamente em 1 minuto."
             )
             return
-
         result = self._analyzer.analyze(text)
         _last_hash[sender] = result["text_hash"]
         logger.info(
@@ -235,43 +237,60 @@ class WhatsAppHandler:
         )
         await self._client.send_message(sender, _build_reply(result))
 
-    async def _handle_media(self, sender: str, message_id: str) -> None:
+    async def _handle_media_b64(self, sender: str, raw_b64: str) -> None:
         if _is_rate_limited(sender):
             await self._client.send_message(
                 sender, "Limite atingido. Tente novamente em 1 minuto."
             )
             return
-
         if _is_image_rate_limited(sender):
             await self._client.send_message(
                 sender, "Limite de imagens atingido (máx. 3/min)."
             )
             return
+        if "," in raw_b64:
+            raw_b64 = raw_b64.split(",", 1)[1]
+        try:
+            image_bytes = base64.b64decode(raw_b64)
+        except Exception as exc:
+            logger.error("Media b64 decode failed for %s: %s", sender, exc)
+            await self._client.send_message(sender, "Não foi possível processar a mídia.")
+            return
+        await self._analyze_image(sender, image_bytes)
 
-        image_bytes = await self._client.get_media_bytes(message_id)
-        if not image_bytes:
+    async def _handle_media_download(
+        self, sender: str, key: dict, message: dict
+    ) -> None:
+        if _is_rate_limited(sender):
             await self._client.send_message(
-                sender, "Não foi possível processar a mídia."
+                sender, "Limite atingido. Tente novamente em 1 minuto."
             )
             return
+        if _is_image_rate_limited(sender):
+            await self._client.send_message(
+                sender, "Limite de imagens atingido (máx. 3/min)."
+            )
+            return
+        image_bytes = await self._client.get_media_bytes(key, message)
+        if not image_bytes:
+            await self._client.send_message(sender, "Não foi possível processar a mídia.")
+            return
+        await self._analyze_image(sender, image_bytes)
 
+    async def _analyze_image(self, sender: str, image_bytes: bytes) -> None:
         if len(image_bytes) > _IMAGE_MAX_BYTES:
             await self._client.send_message(sender, "Imagem muito grande (máx. 5MB).")
             return
-
         text = extract_text(image_bytes)
         if not text:
-            await self._client.send_message(
-                sender, "Nenhum texto encontrado na imagem."
-            )
+            await self._client.send_message(sender, "Nenhum texto encontrado na imagem.")
             return
-
         result = self._analyzer.analyze(text)
         _last_hash[sender] = result["text_hash"]
         logger.info(
             "WhatsApp Image | X-Whatsapp-User-Id: %s | Hash: %s | Score: %s | Fraud: %s | Lookalikes: %s",
-            sender, result["text_hash"], result["final_risk_score"],
-            result["is_fraud"], result["look_alike_domains"],
+            sender, result["text_hash"], result["final_risk_score"], result["is_fraud"],
+            result["look_alike_domains"],
         )
         await self._client.send_message(sender, _build_reply(result))
 
