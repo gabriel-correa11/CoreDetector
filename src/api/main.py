@@ -5,7 +5,7 @@ import logging
 import csv
 from time import perf_counter
 
-from fastapi import FastAPI, Header, HTTPException, Form, Response, Request, UploadFile, File
+from fastapi import FastAPI, Header, HTTPException, Request, UploadFile, File
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -15,12 +15,7 @@ from src.core.image_processor import extract_text
 from src.core.analyzer import FraudAnalyzer
 from src.core.utils import DataMasker
 from src.core.dashboard import get_dashboard
-from src.bot.whatsapp import (
-    build_whatsapp_response,
-    build_feedback_ack,
-    build_unauthorized_response,
-    is_authorized,
-)
+from src.bot.whatsapp import WPPConnectClient, WhatsAppHandler
 
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI()
@@ -30,8 +25,6 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REGISTRY_PATH = os.path.join(PROJECT_ROOT, "models", "registry.json")
 
-_last_hash: dict = {}
-
 _ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 _IMAGE_MAX_BYTES = 5 * 1024 * 1024
 
@@ -39,6 +32,11 @@ _IMAGE_MAX_BYTES = 5 * 1024 * 1024
 def _telegram_user_key(request: Request) -> str:
     uid = request.headers.get("X-Telegram-User-Id")
     return f"tg:{uid}" if uid else get_remote_address(request)
+
+
+def _whatsapp_user_key(request: Request) -> str:
+    uid = request.headers.get("X-Whatsapp-User-Id")
+    return f"wa:{uid}" if uid else get_remote_address(request)
 
 
 def load_production_model():
@@ -50,6 +48,8 @@ def load_production_model():
 
 pipeline = load_production_model()
 analyzer = FraudAnalyzer(pipeline)
+wpp_client = WPPConnectClient()
+wa_handler = WhatsAppHandler(wpp_client, analyzer)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -72,28 +72,13 @@ async def detect(request: Request, body: DetectionRequest):
 
 
 @app.post("/webhook/whatsapp")
-async def whatsapp_webhook(Body: str = Form(default=""), From: str = Form(default="")):
-    body_clean = Body.strip()
-
-    if body_clean.upper() == "SEGURO":
-        if not is_authorized(From):
-            return Response(content=build_unauthorized_response(), media_type="application/xml")
-        last_hash = _last_hash.get(From, "unknown")
-        logging.warning(f"False positive reported | Hash: {last_hash}")
-        return Response(content=build_feedback_ack(), media_type="application/xml")
-
-    t0 = perf_counter()
-    result = analyzer.analyze(body_clean)
-    ms = (perf_counter() - t0) * 1000
-    _last_hash[From] = result["text_hash"]
-    logging.info(
-        f"WhatsApp | Hash: {result['text_hash']} | Score: {result['final_risk_score']} | "
-        f"Fraud: {result['is_fraud']} | Lookalikes: {result['look_alike_domains']} | Latency: {ms:.2f}ms"
-    )
-    twiml = build_whatsapp_response(
-        result["risk_level"], result["is_fraud"], result["signals"], result["suspicious_domains"]
-    )
-    return Response(content=twiml, media_type="application/xml")
+async def whatsapp_webhook(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+    await wa_handler.handle_webhook(payload)
+    return {"status": "ok"}
 
 
 @app.post("/api/v1/detect/image")

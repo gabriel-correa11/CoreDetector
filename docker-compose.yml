@@ -10,9 +10,17 @@ services:
     environment:
       - ADMIN_API_KEY=${ADMIN_API_KEY:-dev-secret}
       - RATE_LIMIT_IMAGE=${RATE_LIMIT_IMAGE:-3/minute}
-      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
-      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
       - AUTHORIZED_USERS=${AUTHORIZED_USERS}
+      - WA_AUTHORIZED_USERS=${WA_AUTHORIZED_USERS}
+      - WPP_BASE_URL=http://wppconnect:21465
+      - WPP_SESSION=${WPP_SESSION:-default}
+      - WPP_AUTH_TOKEN=${WPP_AUTH_TOKEN}
+      - RATE_LIMIT_WHATSAPP_USER=${RATE_LIMIT_WHATSAPP_USER:-10}
+      - RATE_LIMIT_WHATSAPP_IMAGE=${RATE_LIMIT_WHATSAPP_IMAGE:-3}
+    depends_on:
+      - wppconnect
+    networks:
+      - backend
     restart: unless-stopped
 
   telegram_bot:
@@ -27,4 +35,28 @@ services:
       - RATE_LIMIT_TELEGRAM_IMAGE=${RATE_LIMIT_TELEGRAM_IMAGE:-3}
     depends_on:
       - api
+    networks:
+      - backend
     restart: unless-stopped
+
+  wppconnect:
+    image: wppconnect/wppconnect-server:latest
+    ports:
+      - "21465:21465"
+    volumes:
+      - wppconnect_data:/home/node/app/userData
+    environment:
+      - SECRET_KEY=${WPP_SECRET_KEY}
+      - AUTH_TOKEN=${WPP_AUTH_TOKEN}
+      - WEBHOOK_URL=http://api:8000/webhook/whatsapp
+    networks:
+      - backend
+    restart: unless-stopped
+
+networks:
+  backend:
+    driver: bridge
+    internal: false
+
+volumes:
+  wppconnect_data:
