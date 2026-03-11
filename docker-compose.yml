@@ -40,11 +40,13 @@ services:
     restart: unless-stopped
 
   wppconnect:
-    image: wppconnect/wppconnect-server:latest
+    build:
+      context: https://github.com/wppconnect-team/wppconnect-server.git
+      dockerfile: Dockerfile
     ports:
       - "21465:21465"
     volumes:
-      - wppconnect_data:/home/node/app/userData
+      - wppconnect_data:/usr/src/wpp-server/tokens
     environment:
       - SECRET_KEY=${WPP_SECRET_KEY}
       - AUTH_TOKEN=${WPP_AUTH_TOKEN}
